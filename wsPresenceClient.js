@@ -285,6 +285,9 @@ exports.WsPresenceClient = Target.specialize({
                     case 'webrtc':
                         this._rtcService.handleSignalingMessage(message);
                         break;
+                    case 'roomChange':
+                        this.dispatchEventNamed('roomChange', true, true);
+                        break;
                     default:
                         console.log('Received unknown message type:', message.type);
                         break;
