@@ -147,7 +147,6 @@ exports.RtcPPresenceClient = Target.specialize({
     getPeerAtDistance: {
         value: function(distance) {
             var index = this._topology.indexOf(this.id) + distance;
-console.log('distance', this._topology, this.id, distance);
             return this._topology[index];
         }
     },

@@ -41,6 +41,12 @@ var RTCService = Target.specialize({
         }
     },
 
+    setRoomId: {
+        value: function(id) {
+            this._roomId = id;
+        }
+    },
+
     sendOffer: {
         value: function(id, target) {
             var self = this;
@@ -48,6 +54,7 @@ var RTCService = Target.specialize({
             this._roomId = id;
 
             var peerConnection = this._createPeerConnection(target);
+            self._createDataChannel(target);
 
             peerConnection.onicecandidate = function(event) {
                 self._handleIceCandidate(event);
@@ -104,24 +111,21 @@ var RTCService = Target.specialize({
                 return this._setRemoteDescription(message)
                     .then(function () {
                         return self.getAnswer(message)
-                            .then(function (answer) {
-                                self._sendSignaling({
-                                    source: self.id,
-                                    type: 'webrtc',
-                                    cmd: 'sendAnswer',
-                                    data: {
-                                        targetRoom: message.data.targetRoom,
-                                        targetClient: message.source,
-                                        answer: answer
-                                    }
-                                }, message.source);
-                            });
+                    })
+                    .then(function (answer) {
+                        self._sendSignaling({
+                            source: self.id,
+                            type: 'webrtc',
+                            cmd: 'sendAnswer',
+                            data: {
+                                targetRoom: message.data.targetRoom,
+                                targetClient: message.source,
+                                answer: answer
+                            }
+                        }, message.source);
                     });
             } else if (message.data && message.data.answer) {
-                return this._setRemoteDescription(message)
-                    .then(function() {
-                        self._createDataChannel(message.source);
-                    });
+                return self._setRemoteDescription(message);
             } else if (message.data && message.data.candidate) {
                 this._addIceCandidate(message);
             } else if (!message.hasOwnProperty('success')) {
@@ -139,7 +143,9 @@ var RTCService = Target.specialize({
                     message.target = message.target || target;
                     var payload = JSON.stringify(message);
                     if (this._dataChannel) {
-                        this._dataChannel.send(payload);
+                        if (this._dataChannel.readyState == 'open' && (this._peerConnection.iceConnectionState == 'connected' || this._peerConnection.iceConnectionState == 'completed')) {
+                            this._dataChannel.send(payload);
+                        }
                     } else {
                         if (!!target) {
                             this._channels[target].send(payload)
@@ -147,7 +153,9 @@ var RTCService = Target.specialize({
                             for (var channelId in this._channels) {
                                 if (this._channels.hasOwnProperty(channelId)) {
                                     if (excludes.indexOf(channelId) == -1) {
-                                        this._channels[channelId].send(payload);
+                                        if (this._channels[channelId].readyState == 'open' && (this._clients[channelId].iceConnectionState == 'connected' || this._clients[channelId].iceConnectionState == 'completed')) {
+                                            this._channels[channelId].send(payload);
+                                        }
                                     }
                                 }
                             }
@@ -218,8 +226,12 @@ var RTCService = Target.specialize({
             var self = this;
             return new Promise.Promise(function(resolve) {
                     if (self._clients[id]) {
-                        self._clients[id].close();
-                        self._channels[id].close();
+                        if (self._clients[id].iceConnectionState != 'closed') {
+                            self._clients[id].close();
+                        }
+                        if (self._channels[id].readyState != 'closed') {
+                            self._channels[id].close();
+                        }
                     }
                     resolve();
                 })
@@ -329,7 +341,12 @@ var RTCService = Target.specialize({
         value: function(message) {
             var peerConnection = this._getMatchingPeerConnection(message);
             if (peerConnection) {
-                peerConnection.addIceCandidate(new RTCIceCandidate(message.data.candidate));
+                var iceCandidate = new RTCIceCandidate(message.data.candidate);
+                try {
+                    peerConnection.addIceCandidate(iceCandidate);
+                } catch (err) {
+                    console.trace('Error trying to add iceCandidate:', iceCandidate, peerConnection, err);
+                }
             }
         }
     },
@@ -339,7 +356,13 @@ var RTCService = Target.specialize({
             var self = this;
             var isConnectionCreated = this._isServer ? (!remoteId || !!this._clients[remoteId]) : !!this._peerConnection;
             if (!isConnectionCreated) {
-                var peerConnection = new RTCPeerConnection({ iceServers: [] });
+                var peerConnection = new RTCPeerConnection(null);
+                //var peerConnection = new RTCPeerConnection({ iceServers: [] });
+
+                peerConnection.onicecandidate = function(event) {
+                    self._handleIceCandidate(event, remoteId);
+                };
+
                 peerConnection.remoteId = remoteId;
                 peerConnection.oniceconnectionstatechange = function(event) {
                     var eventName = 'close' + (!!remoteId ? '_' + remoteId : '');
@@ -421,11 +444,12 @@ var RTCService = Target.specialize({
     _initializeDataChannel: {
         value: function (dataChannel) {
             var self = this;
-            dataChannel.onopen = function () {
+            dataChannel.onopen = function (event) {
                 self.dispatchEventNamed('ready');
             };
 
-            dataChannel.onerror = function () {
+            dataChannel.onerror = function (event) {
+                console.log('DataChannel error:', event);
             };
 
             dataChannel.onmessage = function (event) {
@@ -474,9 +498,16 @@ var RTCService = Target.specialize({
             return new Promise.Promise(function(resolve, reject) {
                 var peerConnection = self._getMatchingPeerConnection(message);
                 if (peerConnection) {
-                    peerConnection.setLocalDescription(description, function() {
+                    if (peerConnection.localDescription && peerConnection.localDescription.type && peerConnection.localDescription.type !== '') {
                         resolve(peerConnection.localDescription);
-                    });
+                    } else {
+                        peerConnection.setLocalDescription(description, function () {
+                            resolve(peerConnection.localDescription);
+                        }, function (err) {
+                            var pc = self._getMatchingPeerConnection(message);
+                            console.log(err, pc.iceConnectionState, pc.iceGatheringState, pc.signalingState);
+                        });
+                    }
                 } else {
                     reject('No such client:', message.source);
                 }
@@ -490,10 +521,17 @@ var RTCService = Target.specialize({
             return new Promise.Promise(function(resolve, reject) {
                 var peerConnection = self._getMatchingPeerConnection(message);
                 if (peerConnection) {
-                    var description = message.data.offer || message.data.answer;
-                    peerConnection.setRemoteDescription(new RTCSessionDescription(description), function() {
-                        resolve();
-                    });
+                    if (peerConnection.remoteDescription && peerConnection.remoteDescription.type && peerConnection.remoteDescription.type !== '') {
+                        resolve(peerConnection.remoteDescription);
+                    } else {
+                        var description = message.data.offer || message.data.answer;
+                        peerConnection.setRemoteDescription(new RTCSessionDescription(description), function() {
+                            resolve();
+                        }, function(err) {
+                            var pc = self._getMatchingPeerConnection(message);
+                            console.log(err, pc.iceConnectionState, pc.iceGatheringState, pc.signalingState);
+                        });
+                    }
                 } else {
                     reject('No such client:', message.source);
                 }
@@ -502,9 +540,9 @@ var RTCService = Target.specialize({
     },
 
     _handleIceCandidate: {
-        value: function(event) {
+        value: function(event, target) {
             if (event.candidate) {
-                this._sendSignaling({
+                var message = {
                     source: this.id,
                     type: 'webrtc',
                     cmd: 'sendCandidate',
@@ -512,7 +550,11 @@ var RTCService = Target.specialize({
                         targetRoom: this._roomId,
                         candidate: event.candidate
                     }
-                });
+                };
+                if (target) {
+                    message.data.targetClient = target;
+                }
+                this._sendSignaling(message);
             }
         }
     },

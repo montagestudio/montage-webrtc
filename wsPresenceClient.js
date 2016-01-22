@@ -60,9 +60,9 @@ exports.WsPresenceClient = Target.specialize({
     createRoom: {
         value: function(name, id) {
             var self = this;
+            id = id || Uuid.generate();
             return this._ensureConnected()
                 .then(function() {
-                    id = id || Uuid.generate();
                     var message = {
                         id: self._generateId('M'),
                         source: self._id,
@@ -77,6 +77,7 @@ exports.WsPresenceClient = Target.specialize({
                     return self._storeMessagePromise(message);
                 })
                 .then(function(response) {
+                    self._rtcService.setRoomId(id);
                     return response.data;
                 });
         }
@@ -195,7 +196,7 @@ exports.WsPresenceClient = Target.specialize({
                         .then(function (response) {
                             return response.data;
                         });
-                });
+                }).timeout(2000);
         }
     },
 
