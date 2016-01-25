@@ -1,571 +1,497 @@
 var Target = require("montage/core/target").Target,
     Promise = require('montage/core/promise').Promise,
-    RTCPeerConnection = webkitRTCPeerConnection;
+    Uuid = require('montage/core/uuid'),
+    RTCPeerConnection = webkitRTCPeerConnection,
+    ROLE_SIGNALING = 'signaling',
+    ROLE_DATA = 'data',
+    ROLE_MEDIA = 'media',
+    CONNECTION_STATES = {
+        descriptionCreated:     1,
+        localDescriptionSet:    2,
+        descriptionSent:        4,
+        remoteDescriptionSet:   8,
+        candidatesSent:         16,
+        candidatesReceived:     32
+    },
+    CONNECTION_READY_TO_EXCHANGE_CANDIDATES =    15;
 
 var RTCService = Target.specialize({
-    _isPeerToPeer: {
-        value: null
-    },
-
-    _peerToPeerClients: {
-        value: null
-    },
-
-    _clients: {
-        value: null
-    },
-
-    _channels: {
-        value: null
-    },
-
-    _peers: {
-        value: null
-    },
+    id:                        { value: null },
+    _roomId:                    { value: null },
+    _stunServers:               { value: null },
+    _targetClient:              { value: null },
+    _peerConnections:           { value: null },
+    _dataChannels:              { value: null },
+    _localIceCandidates:        { value: null },
+    _remoteIceCandidates:       { value: null },
+    _isP2P:                     { value: null },
+    _streamToAddEvent:          { value: null },
+    _localDescriptionVersion:   { value: null },
+    _remoteDescriptionVersion:  { value: null },
 
     constructor: {
         value: function() {
-            this._isPeerToPeer = false;
-            this._peerToPeerClients = [];
-            this._clients = {};
-            this._channels = {};
-            this._peers = {};
+            this._isP2P = false;
+            this._peerConnections = {};
+            this._dataChannels = {};
+            this._localIceCandidates = {};
+            this._localIceCandidates[ROLE_SIGNALING] = [];
+            this._localIceCandidates[ROLE_DATA] = [];
+            this._localIceCandidates[ROLE_MEDIA] = [];
+            this._remoteIceCandidates = {};
+            this._remoteIceCandidates[ROLE_SIGNALING] = [];
+            this._remoteIceCandidates[ROLE_DATA] = [];
+            this._remoteIceCandidates[ROLE_MEDIA] = [];
+
         }
     },
 
     init: {
-        value: function(id, isServer) {
+        value: function(id, stunServers) {
             this.id = id;
-            this._isServer = !!isServer;
+            this._stunServers = stunServers || null;
             return this;
         }
     },
 
-    setRoomId: {
-        value: function(id) {
-            this._roomId = id;
-        }
-    },
-
-    sendOffer: {
-        value: function(id, target) {
+    connect: {
+        value: function(roomId) {
             var self = this;
-            id = id || this._roomId;
-            this._roomId = id;
-
-            var peerConnection = this._createPeerConnection(target);
-            self._createDataChannel(target);
-
-            peerConnection.onicecandidate = function(event) {
-                self._handleIceCandidate(event);
-            };
-
-            return new Promise.Promise(function(resolve) {
-                peerConnection.createOffer(function(offer) {
-                    peerConnection.setLocalDescription(offer, function() {
-                        var message = {
-                            source: self.id,
-                            type: 'webrtc',
-                            cmd: 'sendOffer',
-                            data: {
-                                targetRoom: id,
-                                offer: peerConnection.localDescription
-                            }
-                        };
-                        self._sendSignaling(message, target);
-                        self.addEventListener('ready', function() {
-                            resolve();
-                        });
-                    });
-                });
-            });
-        }
-    },
-
-    getAnswer: {
-        value: function(message) {
-            var self = this;
-            return new Promise.Promise(function(resolve, reject) {
-                    var peerConnection = self._getMatchingPeerConnection(message);
-                    if (peerConnection) {
-                        if (peerConnection.remoteDescription.type === 'offer') {
-                            peerConnection.createAnswer(function(answer) {
-                                resolve(answer);
-                            });
-                        }
-                    } else {
-                        reject('No such client:', message.source);
-                    }
+            this._roomId = roomId || this._roomId;
+            this._peerConnections[ROLE_SIGNALING] = this._createPeerConnection(ROLE_SIGNALING, true);
+            this._peerConnections[ROLE_DATA]      = this._createPeerConnection(ROLE_DATA, true);
+            return this._sendOffer(this._peerConnections[ROLE_SIGNALING])
+                .then(function() {
+                    return self._sendOffer(self._peerConnections[ROLE_DATA])
                 })
-                .then(function(answer) {
-                    return self._setLocalDescription(message, answer);
+                .then(function() {
+                    return self._switchToP2P();
                 });
+        }
+    },
+
+    connectToPeer: {
+        value: function(peerId) {
+            this._targetClient = peerId || this._targetClient;
+            this._peerConnections[ROLE_DATA]      = this._createPeerConnection(ROLE_DATA, true);
+            return this._sendOffer(this._peerConnections[ROLE_DATA]);
+        }
+    },
+
+    setRoomId: {
+        value: function(roomId) {
+            this._roomId = roomId;
         }
     },
 
     handleSignalingMessage: {
         value: function(message) {
-            var self = this;
-            if (message.data && message.data.offer) {
-                this._createPeerConnection(message.source);
-                return this._setRemoteDescription(message)
-                    .then(function () {
-                        return self.getAnswer(message)
-                    })
-                    .then(function (answer) {
-                        self._sendSignaling({
-                            source: self.id,
-                            type: 'webrtc',
-                            cmd: 'sendAnswer',
-                            data: {
-                                targetRoom: message.data.targetRoom,
-                                targetClient: message.source,
-                                answer: answer
-                            }
-                        }, message.source);
-                    });
-            } else if (message.data && message.data.answer) {
-                return self._setRemoteDescription(message);
-            } else if (message.data && message.data.candidate) {
-                this._addIceCandidate(message);
-            } else if (!message.hasOwnProperty('success')) {
-                return Promise.reject();
+            switch (message.type) {
+                case 'webrtc':
+                    return this._handleWebrtcMessage(message);
+                    break;
+                case 'mode':
+                    return this._handleModeMessage(message);
+                    break;
+                default:
+                    console.log('Unknown message type:', message.type, message);
+                    return Promise.reject();
+                    break;
             }
         }
     },
 
     send: {
-        value: function(message, target, excludes) {
-            excludes = excludes || [];
-            if (target != this.id && excludes.indexOf(target) == -1) {
-                try {
-                    message.source = message.source || this.id;
-                    message.target = message.target || target;
-                    var payload = JSON.stringify(message);
-                    if (this._dataChannel) {
-                        if (this._dataChannel.readyState == 'open' && (this._peerConnection.iceConnectionState == 'connected' || this._peerConnection.iceConnectionState == 'completed')) {
-                            this._dataChannel.send(payload);
-                        }
-                    } else {
-                        if (!!target) {
-                            this._channels[target].send(payload)
-                        } else {
-                            for (var channelId in this._channels) {
-                                if (this._channels.hasOwnProperty(channelId)) {
-                                    if (excludes.indexOf(channelId) == -1) {
-                                        if (this._channels[channelId].readyState == 'open' && (this._clients[channelId].iceConnectionState == 'connected' || this._clients[channelId].iceConnectionState == 'completed')) {
-                                            this._channels[channelId].send(payload);
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
-                } catch (err) {
-                    console.trace('Cannot send message:', message, target, err);
-                }
-            }
+        value: function(message) {
+            message.source = message.source || this.id;
+            this._dataChannels[ROLE_DATA].send(JSON.stringify(message));
         }
     },
 
-    disconnect: {
-        value: function(target) {
+    quit: {
+        value: function() {
             var self = this;
             return new Promise.Promise(function(resolve) {
                 var message = {
-                    type: 'close'
+                    type: 'quit'
                 };
-                self.send(message, target);
+                self.send(message);
+
+                self._closeConnectionWithRole(ROLE_DATA);
+                self._closeConnectionWithRole(ROLE_SIGNALING);
                 resolve();
             });
         }
     },
 
-    quit: {
-        value: function(target) {
-            var self = this;
-            this._isPeerToPeer = false;
-            return new Promise.Promise(function(resolve) {
-                    var message = {
-                        type: 'quit'
-                    };
-                    self.send(message, target);
-                    resolve();
-                })
-                .then(function() {
-                    if (self._dataChannel) {
-                        self._dataChannel.close();
-                        delete self._dataChannel;
-                    } else {
-                        for (var channelId in self._channels) {
-                            if (self._channels.hasOwnProperty(channelId)) {
-                                self._channels[channelId].close();
-                                self._channels[channelId] = null;
-                                delete self._channels[channelId];
-                            }
-                        }
-                    }
-                    if (self._peerConnection) {
-                        self._peerConnection.close();
-                        self._peerConnection = null;
-                    } else {
-                        for (var clientId in self._clients) {
-                            if (self._clients.hasOwnProperty(clientId)) {
-                                self._clients[clientId].close();
-                                self._clients[clientId] = null;
-                                delete self._clients[clientId];
-                            }
-                        }
-                    }
-                });
-        }
-    },
-
-    removeClient: {
-        value: function(id) {
-            var self = this;
-            return new Promise.Promise(function(resolve) {
-                    if (self._clients[id]) {
-                        if (self._clients[id].iceConnectionState != 'closed') {
-                            self._clients[id].close();
-                        }
-                        if (self._channels[id].readyState != 'closed') {
-                            self._channels[id].close();
-                        }
-                    }
-                    resolve();
-                })
-                .then(function() {
-                    delete self._clients[id];
-                    delete self._channels[id];
-                });
-        }
-    },
-
-    enterPeerToPeerMode: {
-        value: function() {
-            if (!this._isPeerToPeer) {
-                var message = {
-                    type: 'P2P'
-                };
-                this.send(message);
-                this._isPeerToPeer = true;
-            }
-        }
-    },
-
     attachStream: {
-        value: function(stream, target) {
-            var peerConnection = this._getMatchingPeerConnection(target);
-            if (peerConnection) {
-                peerConnection.addStream(stream);
-            } else {
-                if (target) {
-                    this._clients[target].addStream(stream);
-                } else {
-                    for (var clientId in this._clients) {
-                        if (this._clients.hasOwnProperty(clientId)) {
-                            this._clients[clientId].addStream(stream);
-                        }
-                    }
-                }
-            }
+        value: function(stream) {
+            this._peerConnections[ROLE_MEDIA] = this._createPeerConnection(ROLE_MEDIA);
+            this._peerConnections[ROLE_MEDIA].addStream(stream);
         }
     },
 
     detachStream: {
-        value: function(stream, target) {
-            var peerConnection = this._getMatchingPeerConnection(target);
-            if (peerConnection && ['completed', 'connected'].indexOf(peerConnection.iceConnectionState) != -1) {
-                peerConnection.removeStream(stream);
-            } else {
-                for (var clientId in this._clients) {
-                    if (this._clients.hasOwnProperty(clientId)  && ['completed', 'connected'].indexOf(this._clients[clientId].iceConnectionState) != -1) {
-                        this._clients[clientId].removeStream(stream);
-                    }
-                }
+        value: function() {
+            if (this._peerConnections[ROLE_MEDIA]) {
+                this._peerConnections[ROLE_MEDIA].close();
+                delete this._peerConnections[ROLE_MEDIA];
             }
         }
     },
 
-    detachLocalStreams: {
-        value: function(target) {
-            var streams,
-                peerConnection = this._getMatchingPeerConnection(target);
-            if (peerConnection && ['completed', 'connected'].indexOf(peerConnection.iceConnectionState) != -1) {
-                streams = peerConnection.getLocalStreams();
-                for (var i = 0, streamsLength = streams.length; i < streamsLength; i++) {
-                    peerConnection.removeStream(streams[i]);
-                }
-            } else {
-                for (var clientId in this._clients) {
-                    if (this._clients.hasOwnProperty(clientId)  && ['completed', 'connected'].indexOf(this._clients[clientId].iceConnectionState) != -1) {
-                        peerConnection = this._clients[clientId];
-                        streams = peerConnection.getLocalStreams();
-                        for (var i = 0, streamsLength = streams.length; i < streamsLength; i++) {
-                            peerConnection.removeStream(streams[i]);
-                        }
-                    }
-                }
-            }
-        }
-    },
-
-    _getMatchingPeerConnection: {
-        value: function(target) {
-            if (typeof target === 'object') {
-                target = target.source;
-            }
-            var peerConnection = this._peerConnection;
-            if (!peerConnection) {
-                peerConnection = this._clients[target];
-            }
-            return peerConnection;
-        }
-    },
-
-    _getMatchingDataChannel: {
-        value: function(target) {
-            if (typeof target === 'object') {
-                target = target.source;
-            }
-            var dataChannel = this._dataChannel;
-            if (!dataChannel) {
-                dataChannel = this._channels[target];
-            }
-            return dataChannel;
-        }
-    },
-
-    _addIceCandidate: {
+    _handleModeMessage: {
         value: function(message) {
-            var peerConnection = this._getMatchingPeerConnection(message);
-            if (peerConnection) {
-                var iceCandidate = new RTCIceCandidate(message.data.candidate);
-                try {
-                    peerConnection.addIceCandidate(iceCandidate);
-                } catch (err) {
-                    console.trace('Error trying to add iceCandidate:', iceCandidate, peerConnection, err);
-                }
+            switch (message.cmd) {
+                case 'p2p':
+                    this._switchToP2P();
+                    return Promise.resolve();
+                    break;
+                default:
+                    console.log('Unknown mode message cmd:', message.cmd, message);
             }
+        }
+    },
+
+    _handleWebrtcMessage: {
+        value: function(message) {
+            var data = message.data,
+                role = data.role;
+            switch (message.cmd) {
+                case 'offer':
+                    this._targetClient = message.source;
+                    this._peerConnections[role] = this._createPeerConnection(role);
+                    this._peerConnections[role].descriptionVersion = data.descriptionVersion;
+                    this._peerConnections[role].remoteState = data.state;
+                    return this._receiveOffer(this._peerConnections[role], data.description);
+                    break;
+                case 'answer':
+                    if (data.descriptionVersion === this._peerConnections[role].descriptionVersion) {
+                        this._targetClient = message.source;
+                        return this._receiveAnswer(this._peerConnections[role], data.description);
+                    } else {
+                        return Promise.resolve();
+                    }
+                    break;
+                case 'candidates':
+                    this._receiveIceCandidates(this._peerConnections[role], data.candidates);
+                    break;
+                default:
+                    console.log('Unknown webrtc message cmd:', message.cmd, message);
+                    break;
+            }
+        }
+    },
+
+    _closeConnectionWithRole: {
+        value: function(role) {
+            this._dataChannels[role].close();
+            delete this._dataChannels[role];
+            this._peerConnections[role].close();
+            delete this._peerConnections[role];
         }
     },
 
     _createPeerConnection: {
-        value: function(remoteId) {
-            var self = this;
-            var isConnectionCreated = this._isServer ? (!remoteId || !!this._clients[remoteId]) : !!this._peerConnection;
-            if (!isConnectionCreated) {
-                var peerConnection = new RTCPeerConnection(null);
-                //var peerConnection = new RTCPeerConnection({ iceServers: [] });
+        value: function(role) {
+            var self = this,
+                peerConnection = new RTCPeerConnection(this._stunServers, null);
+            peerConnection.role = role;
+            peerConnection.state = 0;
 
-                peerConnection.onicecandidate = function(event) {
-                    self._handleIceCandidate(event, remoteId);
-                };
+            peerConnection.onicecandidate = function(event) {
+                self._handleLocalIceCandidate(peerConnection, event.candidate);
+            };
 
-                peerConnection.remoteId = remoteId;
-                peerConnection.oniceconnectionstatechange = function(event) {
-                    var eventName = 'close' + (!!remoteId ? '_' + remoteId : '');
-                    if (['closed', 'failed'].indexOf(peerConnection.iceConnectionState) != -1) {
-                        self.dispatchEventNamed(eventName);
-                    }
-                    if (peerConnection.iceConnectionState === 'disconnected') {
-                        setTimeout(function() {
-                            if (['closed', 'disconnected', 'failed'].indexOf(peerConnection.iceConnectionState) != -1) {
-                                self.dispatchEventNamed(eventName);
-                            }
-                        }, 2000)
-                    }
-                };
+            peerConnection.onaddstream = function(event) {
+                self.dispatchEvent(event, self._targetClient);
+            };
 
-                peerConnection.onnegotiationneeded = function(event) {
-                    self.sendOffer(null, remoteId);
-                };
+            peerConnection.oniceconnectionstatechange = function(event) {
+                if (peerConnection.iceConnectionState === 'completed' ||
+                    peerConnection.iceConnectionState === 'connected') {
 
-                peerConnection.onaddstream = function(event) {
-                    event.remoteId = remoteId;
-                    self.dispatchEvent(event);
-                };
-                peerConnection.onremovestream = function(event) {
-                    event.remoteId = remoteId;
-                    self.dispatchEvent(event);
-                };
-                var closeListener;
-                if (!!remoteId) {
-                    peerConnection.ondatachannel = function(event) {
-                        self._channels[remoteId] = event.channel;
-                        self._initializeDataChannel(self._channels[remoteId]);
-                    };
-                    this._clients[remoteId] = peerConnection;
-
-                    closeListener = function () {
-                        if (self._channels[remoteId]) {
-                            self._channels[remoteId].close();
-                        }
-                        delete self._channels[remoteId];
-                        delete self._clients[remoteId];
-                        var p2pIndex = self._peerToPeerClients.indexOf(remoteId);
-                        if (p2pIndex != -1) {
-                            self._peerToPeerClients.splice(p2pIndex, 1);
-                        }
-                        var quitEvent = new CustomEvent('message');
-                        quitEvent.data = JSON.stringify({
-                            type: 'quit',
-                            source: remoteId
-                        });
-                        self.dispatchEvent(quitEvent);
-                        self.removeEventListener('close_' + remoteId, closeListener);
-                    };
-                    this.addEventListener('close_' + remoteId, closeListener);
-                } else {
-                    this._peerConnection = peerConnection;
-
-                    closeListener = function () {
-                        if (self._dataChannel) {
-                            self._dataChannel.close();
-                        }
-                        delete self._dataChannel;
-                        delete self._peerConnection;
-                        self._isPeerToPeer = false;
-                        var quitEvent = new CustomEvent('message');
-                        quitEvent.data = JSON.stringify({
-                            type: 'close'
-                        });
-                        self.dispatchEvent(quitEvent);
-                        self.removeEventListener('close_' + remoteId, closeListener);
-                    };
-                    this.addEventListener('close_' + remoteId, closeListener);
                 }
+            };
+
+            peerConnection.onnegotiationneeded = function() {
+                if (peerConnection.state === CONNECTION_READY_TO_EXCHANGE_CANDIDATES) {
+                    peerConnection.isRenegociating = true;
+                }
+                self._sendOffer(peerConnection);
+            };
+
+            peerConnection.ondatachannel = function(event) {
+                self._initializeDataChannel(peerConnection, event.channel);
+            };
+
+            return peerConnection;
+        }
+    },
+
+    _sendDescription: {
+        value: function (peerConnection, descriptionType, description) {
+            var message = {
+                source: this.id,
+                type: 'webrtc',
+                cmd: descriptionType,
+                data: {
+                    targetRoom: this._roomId,
+                    role: peerConnection.role,
+                    state: peerConnection.state,
+                    descriptionVersion: peerConnection.descriptionVersion,
+                    description: description
+                }
+            };
+            if (this._targetClient) {
+                message.data.targetClient = this._targetClient;
             }
-            return this._getMatchingPeerConnection(remoteId);
+            this._sendSignaling(message);
+            peerConnection.state += CONNECTION_STATES.descriptionSent;
+        }
+    },
+
+    _sendOffer: {
+        value: function(peerConnection) {
+            var self = this,
+                descriptionVersion;
+            peerConnection.state = 0;
+            return this._createOffer(peerConnection)
+                .then(function(offer) {
+                    descriptionVersion = Uuid.generate();
+                    return self._setLocalDescription(peerConnection, offer);
+                })
+                .then(function(offer) {
+                    return new Promise.Promise(function(resolve) {
+                        peerConnection.descriptionVersion = descriptionVersion;
+                        self._sendDescription(peerConnection, 'offer', offer);
+                        self.addEventListener('ready', function() {
+                            resolve();
+                        });
+                    });
+                });
+        }
+    },
+
+    _createOffer: {
+        value: function(peerConnection) {
+            return new Promise.Promise(function(resolve, reject) {
+                peerConnection.createOffer(function(offer) {
+                    peerConnection.state += CONNECTION_STATES.descriptionCreated;
+                    resolve(offer);
+                }, function(err) {
+                    reject(err);
+                });
+            });
+        }
+    },
+
+    _setLocalDescription: {
+        value: function(peerConnection, description) {
+            var self = this;
+            return new Promise.Promise(function(resolve, reject) {
+                peerConnection.setLocalDescription(description, function() {
+                    peerConnection.state += CONNECTION_STATES.localDescriptionSet;
+                    if (self._remoteIceCandidates[peerConnection.role] &&
+                        self._remoteIceCandidates[peerConnection.role].length > 0) {
+                        self._receiveIceCandidates(peerConnection, self._remoteIceCandidates[peerConnection.role]);
+                    }
+                    resolve(peerConnection.localDescription);
+                }, function(err) {
+                    reject(err);
+                });
+            });
+        }
+    },
+
+    _sendSignaling: {
+        value: function(message) {
+            if (this._isP2P) {
+                this._dataChannels[ROLE_SIGNALING].send(JSON.stringify(message));
+            } else {
+                this.dispatchEventNamed('signalingMessage', true, true, message);
+            }
+        }
+    },
+
+    _receiveOffer: {
+        value: function(peerConnection, offer, descriptionVersion) {
+            var self = this;
+            peerConnection.state = 0;
+            this._remoteIceCandidates[peerConnection.role] = [];
+            return this._setRemoteDescription(peerConnection, offer)
+                .then(function() {
+                    return self._createAnswer(peerConnection);
+                })
+                .then(function(answer) {
+                    return self._setLocalDescription(peerConnection, answer);
+                })
+                .then(function(answer) {
+                    return self._sendDescription(peerConnection, 'answer', answer, descriptionVersion);
+                });
+        }
+    },
+
+    _setRemoteDescription: {
+        value: function(peerConnection, description) {
+            var self = this;
+            return new Promise.Promise(function(resolve, reject) {
+                peerConnection.setRemoteDescription(new RTCSessionDescription(description), function() {
+                    peerConnection.state += CONNECTION_STATES.remoteDescriptionSet;
+                    if (self._remoteIceCandidates[peerConnection.role] &&
+                        self._remoteIceCandidates[peerConnection.role].length > 0) {
+                        self._receiveIceCandidates(peerConnection, self._remoteIceCandidates[peerConnection.role]);
+                    }
+                    resolve(peerConnection.remoteDescription);
+                }, function(err) {
+                    reject(err);
+                });
+            });
+        }
+    },
+
+    _createAnswer: {
+        value: function(peerConnection) {
+            return new Promise.Promise(function(resolve, reject) {
+                peerConnection.createAnswer(function(answer) {
+                    peerConnection.state += CONNECTION_STATES.descriptionCreated;
+                    resolve(answer);
+                }, function(err) {
+                    reject(err);
+                });
+            });
+        }
+    },
+
+    _receiveAnswer: {
+        value: function(peerConnection, answer) {
+            var self = this;
+            if (this._localDescriptionVersion !== this._remoteDescriptionVersion) {
+                return Promise.resolve();
+            } else {
+                return this._setRemoteDescription(peerConnection, answer)
+                    .then(function() {
+                        if (peerConnection.role !== ROLE_MEDIA) {
+                            self._createDataChannel(peerConnection);
+                        }
+                    });
+            }
+        }
+    },
+
+    _handleLocalIceCandidate: {
+        value: function(peerConnection, candidate) {
+            if (candidate) {
+                this._localIceCandidates[peerConnection.role].push(candidate);
+            } else {
+                this._sendCandidates(peerConnection);
+            }
+        }
+    },
+
+    _sendCandidates: {
+        value: function(peerConnection) {
+            var message = {
+                source: this.id,
+                type: 'webrtc',
+                cmd: 'candidates',
+                data: {
+                    targetRoom: this._roomId,
+                    role: peerConnection.role,
+                    state: peerConnection.state,
+                    candidates: this._localIceCandidates[peerConnection.role]
+                }
+            };
+            if (this._targetClient) {
+                message.data.targetClient = this._targetClient;
+            }
+            this._sendSignaling(message);
+        }
+    },
+
+    _receiveIceCandidates: {
+        value: function(peerConnection, candidates) {
+            if (peerConnection.state % CONNECTION_READY_TO_EXCHANGE_CANDIDATES === 0) {
+                for (var i = 0, candidatesLength = candidates.length; i < candidatesLength; i++) {
+                    peerConnection.addIceCandidate(new RTCIceCandidate(candidates[i]));
+                }
+            } else {
+                this._remoteIceCandidates[peerConnection.role] = candidates;
+            }
         }
     },
 
     _initializeDataChannel: {
-        value: function (dataChannel) {
+        value: function (peerConnection, dataChannel) {
             var self = this;
-            dataChannel.onopen = function (event) {
-                self.dispatchEventNamed('ready');
+
+            dataChannel.onopen = function () {
+                self.dispatchEventNamed('ready', true, true, { role: peerConnection.role });
+if (peerConnection.role === ROLE_DATA) {
+    setInterval(function() {
+        dataChannel.send('{ "type": "ping"}');
+    }, 5000)
+}
             };
 
             dataChannel.onerror = function (event) {
                 console.log('DataChannel error:', event);
             };
 
-            dataChannel.onmessage = function (event) {
-                var message = JSON.parse(event.data);
-                switch (message.type) {
-                    case 'webrtc':
-                        if (!message.target || message.target.split('P')[0] === self.id) {
-                            if (!message.target || message.target.indexOf('P') == -1) {
-                                self.handleSignalingMessage(message);
+            if (peerConnection.role === ROLE_DATA) {
+                dataChannel.onmessage = function (event) {
+                    var message = JSON.parse(event.data);
+                    switch (message.type) {
+                        case 'webrtc':
+                            if (self._isP2P && self._removePeerId(message.data.targetClient) !== self.id) {
+                                self.dispatchEventNamed('forwardMessage', true, true, message);
                             } else {
-                                self.dispatchEventNamed('p2pSignalingMessage', true, true, message);
+                                self.dispatchEventNamed('signalingMessage', true, true, message);
                             }
-                        } else {
-                            self.send(message, message.target.split('P')[0]);
-                        }
-                        break;
-                    case 'P2P':
-                        self._peerToPeerClients.push(message.source);
-                        break;
-                    default:
-                        self.dispatchEvent(event);
-                        break;
+                            break;
+                        case 'ping':
+                            dataChannel.send('{ "type": "pong" }');
+                            break;
+                        case 'pong':
+                            break;
+                        default:
+                            self.dispatchEvent(event);
+                            break;
+                    }
+                };
+            } else {
+                dataChannel.onmessage = function(event) {
+                    self.handleSignalingMessage(JSON.parse(event.data));
                 }
-            };
+            }
+
+            this._dataChannels[peerConnection.role] = dataChannel;
         }
     },
 
     _createDataChannel: {
-        value: function(target) {
-            if (!this._getMatchingDataChannel(target)) {
-                var peerConnection = this._getMatchingPeerConnection(target);
-                var dataChannel = peerConnection.createDataChannel('message-' + this.id, { protocol: 'tcp' });
-                this._initializeDataChannel(dataChannel);
-                if (this._peerConnection) {
-                    this._dataChannel = dataChannel;
-                } else {
-                    this._channels[target] = dataChannel;
-                }
+        value: function(peerConnection) {
+            this._initializeDataChannel(peerConnection, peerConnection.createDataChannel(this._targetClient + '_' + peerConnection.role));
+        }
+    },
+
+    _switchToP2P: {
+        value: function() {
+            if (!this._isP2P) {
+                this._isP2P = true;
+                this._sendSignaling({
+                    type: 'mode',
+                    cmd: 'p2p'
+                });
             }
+            this.dispatchEventNamed('switchToP2P');
+console.trace('P2P mode');
         }
     },
 
-    _setLocalDescription: {
-        value: function(message, description) {
-            var self = this;
-            return new Promise.Promise(function(resolve, reject) {
-                var peerConnection = self._getMatchingPeerConnection(message);
-                if (peerConnection) {
-                    if (peerConnection.localDescription && peerConnection.localDescription.type && peerConnection.localDescription.type !== '') {
-                        resolve(peerConnection.localDescription);
-                    } else {
-                        peerConnection.setLocalDescription(description, function () {
-                            resolve(peerConnection.localDescription);
-                        }, function (err) {
-                            var pc = self._getMatchingPeerConnection(message);
-                            console.log(err, pc.iceConnectionState, pc.iceGatheringState, pc.signalingState);
-                        });
-                    }
-                } else {
-                    reject('No such client:', message.source);
-                }
-            });
-        }
-    },
-
-    _setRemoteDescription: {
-        value: function(message) {
-            var self = this;
-            return new Promise.Promise(function(resolve, reject) {
-                var peerConnection = self._getMatchingPeerConnection(message);
-                if (peerConnection) {
-                    if (peerConnection.remoteDescription && peerConnection.remoteDescription.type && peerConnection.remoteDescription.type !== '') {
-                        resolve(peerConnection.remoteDescription);
-                    } else {
-                        var description = message.data.offer || message.data.answer;
-                        peerConnection.setRemoteDescription(new RTCSessionDescription(description), function() {
-                            resolve();
-                        }, function(err) {
-                            var pc = self._getMatchingPeerConnection(message);
-                            console.log(err, pc.iceConnectionState, pc.iceGatheringState, pc.signalingState);
-                        });
-                    }
-                } else {
-                    reject('No such client:', message.source);
-                }
-            });
-        }
-    },
-
-    _handleIceCandidate: {
-        value: function(event, target) {
-            if (event.candidate) {
-                var message = {
-                    source: this.id,
-                    type: 'webrtc',
-                    cmd: 'sendCandidate',
-                    data: {
-                        targetRoom: this._roomId,
-                        candidate: event.candidate
-                    }
-                };
-                if (target) {
-                    message.data.targetClient = target;
-                }
-                this._sendSignaling(message);
-            }
-        }
-    },
-
-    _sendSignaling: {
-        value: function(message, target) {
-            if (this._isPeerToPeer || this._peerToPeerClients.indexOf(target) != -1) {
-                this.send(message, target);
-            } else {
-                this.dispatchEventNamed('signalingMessage', true, true, message);
-            }
+    _removePeerId: {
+        value: function(clientId) {
+            return clientId.split('P')[0];
         }
     }
 });

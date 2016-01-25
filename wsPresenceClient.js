@@ -1,6 +1,7 @@
 var Target = require("montage/core/target").Target,
     Promise = require('montage/core/promise').Promise,
-    Uuid = require('montage/core/uuid');
+    Uuid = require('montage/core/uuid'),
+    RTCService = require("./client").RTCService;
 
 var clients = {};
 
@@ -9,6 +10,19 @@ exports.WsPresenceClient = Target.specialize({
     _presenceEndpoint: { value: null },
     _messages: { value: null },
     _presenceServer: { value: null },
+    _roomId: { value: null },
+
+    rtcService: {
+        get: function() {
+            return this._rtcServices.default;
+        }
+    },
+
+    rtcServices: {
+        get: function() {
+            return this._rtcServices;
+        }
+    },
 
     constructor: {
         value: function() {
@@ -18,16 +32,26 @@ exports.WsPresenceClient = Target.specialize({
     },
 
     init: {
-        value: function(presenceEndpointUrl, rtcService, isServer) {
+        value: function(presenceEndpointUrl, isServer) {
             var self = this;
             if (clients[presenceEndpointUrl]) {
                 return clients[presenceEndpointUrl];
             }
             this._presenceEndpoint = presenceEndpointUrl;
-            this._rtcService = rtcService.init(this._id, isServer);
-            this._rtcService.addEventListener('signalingMessage', function(event) {
-                self._send(event.detail);
-            }, false);
+
+            this._rtcServices = {};
+            if (!isServer) {
+                this._rtcServices.default = new RTCService().init(this._id);
+                var signalingMessageListener = function(event) {
+                    self._send(event.detail);
+                };
+                this._rtcServices.default.addEventListener('signalingMessage', signalingMessageListener, false);
+                this._rtcServices.default.addEventListener('switchToP2P', function() {
+                    self._rtcServices.default.removeEventListener('signalingMessage', signalingMessageListener);
+                    self.disconnect();
+                }, false);
+            }
+
             return this;
         }
     },
@@ -61,6 +85,7 @@ exports.WsPresenceClient = Target.specialize({
         value: function(name, id) {
             var self = this;
             id = id || Uuid.generate();
+            this._roomId = id;
             return this._ensureConnected()
                 .then(function() {
                     var message = {
@@ -77,7 +102,6 @@ exports.WsPresenceClient = Target.specialize({
                     return self._storeMessagePromise(message);
                 })
                 .then(function(response) {
-                    self._rtcService.setRoomId(id);
                     return response.data;
                 });
         }
@@ -176,11 +200,9 @@ exports.WsPresenceClient = Target.specialize({
 
     joinRoom: {
         value: function(id) {
-            var self = this;
+            var self = this,
+                classroom;
             return this._ensureConnected()
-                .then(function() {
-                    return self._rtcService.sendOffer(id);
-                })
                 .then(function() {
                     var message = {
                         id: self._generateId('M'),
@@ -193,17 +215,23 @@ exports.WsPresenceClient = Target.specialize({
                     };
                     self._send(message);
                     return self._storeMessagePromise(message)
-                        .then(function (response) {
-                            return response.data;
-                        });
-                }).timeout(2000);
+                })
+                .then(function (response) {
+                    classroom = response.data;
+                })
+                .then(function() {
+                    return self._rtcServices.default.connect(id);
+                })
+                .then(function() {
+                    return classroom;
+                });
         }
     },
 
     closeRoom: {
         value: function(id) {
             var self = this;
-            return this._rtcService.disconnect()
+            return Promise.all(this._rtcServices.map(function(x) { return x.disconnect(); }))
                 .then(function() {
                     if (self._presenceServer && self._presenceServer.readyState === 1) {
                         var message = {
@@ -228,6 +256,41 @@ exports.WsPresenceClient = Target.specialize({
     disconnect: {
         value: function() {
             this._presenceServer.close(1000);
+        }
+    },
+
+    sendToClients: {
+        value: function(message) {
+            for (var clientId in this._rtcServices) {
+                if (this._rtcServices.hasOwnProperty(clientId)) {
+                    this.sendToClient(message, clientId);
+                }
+            }
+        }
+    },
+
+    sendToClient: {
+        value: function(message, clientId) {
+            this._rtcServices[this._removePeerId(clientId)].send(message);
+        }
+    },
+
+    removeClient: {
+        value: function(clientId) {
+            this._rtcServices[clientId].quit();
+            delete this._rtcServices[clientId];
+        }
+    },
+
+    attachStreamToClient: {
+        value: function(stream, clientId) {
+            this._rtcServices[clientId].attachStream(stream);
+        }
+    },
+
+    detachStreamFromClient: {
+        value: function(stream, clientId) {
+            this._rtcServices[clientId].detachStream(stream);
         }
     },
 
@@ -271,7 +334,8 @@ exports.WsPresenceClient = Target.specialize({
 
     _handleMessage: {
         value: function(socketMessage) {
-            var request,
+            var self = this,
+                request,
                 message = JSON.parse(socketMessage.data);
             if (message.source && message.source === this._id) {
                 if (message.id && (request = this._messages[message.id])) {
@@ -284,7 +348,31 @@ exports.WsPresenceClient = Target.specialize({
             } else {
                 switch (message.type) {
                     case 'webrtc':
-                        this._rtcService.handleSignalingMessage(message);
+                        if (this._rtcServices.default) {
+                            this._rtcServices.default.handleSignalingMessage(message);
+                        } else {
+                            var rtcService = this._rtcServices[message.source];
+                            if (!rtcService) {
+                                rtcService = new RTCService().init(this._id);
+                                rtcService.setRoomId(self._roomId);
+                                rtcService.addEventListener('signalingMessage', function(event) {
+                                    self._send(event.detail);
+                                }, false);
+                                rtcService.addEventListener('message', function(event) {
+                                    self.dispatchEvent(event);
+                                });
+                                rtcService.addEventListener('addstream', function(event) {
+                                    event.remoteId = message.source;
+                                    self.dispatchEvent(event);
+                                });
+                                rtcService.addEventListener('forwardMessage', function(event) {
+                                    self._forwardMessage(event.detail);
+                                });
+
+                                this._rtcServices[message.source] = rtcService;
+                            }
+                            rtcService.handleSignalingMessage(message);
+                        }
                         break;
                     case 'roomChange':
                         this.dispatchEventNamed('roomChange', true, true);
@@ -297,10 +385,27 @@ exports.WsPresenceClient = Target.specialize({
         }
     },
 
+    _forwardMessage: {
+        value: function(message) {
+            var target = this._rtcServices[this._removePeerId(message.data.targetClient)];
+            if (target) {
+                target.send(message);
+            } else {
+                console.log('Unknown target', message.data.targetClient, message);
+            }
+        }
+    },
+
     _generateId: {
         value: function(prefix) {
             prefix = prefix || '';
             return prefix + Date.now() + 'C' + Math.round(Math.random() * 1000000);
+        }
+    },
+
+    _removePeerId: {
+        value: function(clientId) {
+            return clientId.split('P')[0];
         }
     }
 });

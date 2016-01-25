@@ -14,7 +14,7 @@ exports.RtcPPresenceClient = Target.specialize({
             var self = this;
             this.id = signalingRtcService.id + 'P' + Math.round(Math.random() * 1000000);
             this._signalingService = signalingRtcService;
-            this._signalingService.addEventListener('p2pSignalingMessage', function(event) {
+            this._signalingService.addEventListener('signalingMessage', function(event) {
                 var message = event.detail;
                 var peer = self._peers[message.source];
                 if (!peer) {
@@ -39,7 +39,7 @@ exports.RtcPPresenceClient = Target.specialize({
     _createPeer: {
         value: function (remoteId) {
             var self = this,
-                peer = new RTCService().init(this.id, true);
+                peer = new RTCService().init(this.id);
             peer.addEventListener('signalingMessage', function (event) {
                 self._signalingService.send(event.detail, remoteId);
             });
@@ -82,7 +82,7 @@ exports.RtcPPresenceClient = Target.specialize({
         value: function(remoteId) {
             if (remoteId !== this.id) {
                 var peer = this._createPeer(remoteId);
-                peer.sendOffer(null, remoteId);
+                peer.connectToPeer(remoteId);
             }
         }
     },
