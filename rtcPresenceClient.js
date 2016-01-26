@@ -111,13 +111,14 @@ exports.RtcPPresenceClient = Target.specialize({
         }
     },
 
-    _disconnectFromNode: {
+    _disconnectFromPeer: {
         value: function (peerId) {
             var self = this;
-            this._peers[peerId].removeClient(peerId)
-                .then(function () {
-                    delete self._peers[peerId];
-                });
+            try {
+                this._peers[peerId].quit();
+            } catch(err) {
+                delete self._peers[peerId];
+            }
         }
     },
 
@@ -126,7 +127,7 @@ exports.RtcPPresenceClient = Target.specialize({
             for (var peerId in this._peers) {
                 if (this._peers.hasOwnProperty(peerId)) {
                     if (this._topology.indexOf(peerId) == -1) {
-                        this._disconnectFromNode(peerId);
+                        this._disconnectFromPeer(peerId);
                     }
                 }
             }
@@ -138,7 +139,7 @@ exports.RtcPPresenceClient = Target.specialize({
             var self = this;
             for (var peerId in this._peers) {
                 if (this._peers.hasOwnProperty(peerId)) {
-                    self._disconnectFromNode(peerId);
+                    self._disconnectFromPeer(peerId);
                 }
             }
         }

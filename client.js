@@ -109,13 +109,12 @@ var RTCService = Target.specialize({
     },
 
     quit: {
-        value: function() {
+        value: function(sendMessage) {
             var self = this;
             return new Promise.Promise(function(resolve) {
-                var message = {
-                    type: 'quit'
-                };
-                self.send(message);
+                if (sendMessage) {
+                    self.send({ type: 'quit' });
+                }
 
                 self._closeConnectionWithRole(ROLE_DATA);
                 self._closeConnectionWithRole(ROLE_SIGNALING);
@@ -185,10 +184,18 @@ var RTCService = Target.specialize({
 
     _closeConnectionWithRole: {
         value: function(role) {
-            this._dataChannels[role].close();
-            delete this._dataChannels[role];
-            this._peerConnections[role].close();
-            delete this._peerConnections[role];
+            try {
+                this._dataChannels[role].close();
+            }catch (err) {
+            } finally {
+                delete this._dataChannels[role];
+            }
+            try {
+                this._peerConnections[role].close();
+            }catch (err) {
+            } finally {
+                delete this._peerConnections[role];
+            }
         }
     },
 
@@ -207,7 +214,7 @@ var RTCService = Target.specialize({
                 self.dispatchEvent(event, self._targetClient);
             };
 
-            peerConnection.oniceconnectionstatechange = function(event) {
+            peerConnection.oniceconnectionstatechange = function() {
                 if (peerConnection.iceConnectionState === 'completed' ||
                     peerConnection.iceConnectionState === 'connected') {
 
@@ -427,11 +434,21 @@ var RTCService = Target.specialize({
 
             dataChannel.onopen = function () {
                 self.dispatchEventNamed('ready', true, true, { role: peerConnection.role });
-if (peerConnection.role === ROLE_DATA) {
-    setInterval(function() {
-        dataChannel.send('{ "type": "ping"}');
-    }, 5000)
-}
+                if (peerConnection.role === ROLE_DATA) {
+                    var pingRemote = function() {
+                        try {
+                            dataChannel.send('{ "type": "ping"}');
+                            setTimeout(pingRemote, 5090);
+                        } catch (err) {
+                            console.log('Unable to ping:', err);
+                        }
+                    };
+                    setTimeout(pingRemote, 5000)
+                }
+            };
+
+            dataChannel.onclose = function(event) {
+                self.dispatchEventNamed('connectionClose', true, true, self._targetClient);
             };
 
             dataChannel.onerror = function (event) {
@@ -485,7 +502,6 @@ if (peerConnection.role === ROLE_DATA) {
                 });
             }
             this.dispatchEventNamed('switchToP2P');
-console.trace('P2P mode');
         }
     },
 

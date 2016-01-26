@@ -74,7 +74,7 @@ exports.WsPresenceClient = Target.specialize({
                     reject(err)
                 };
 
-                self._presenceServer.onclose = function(code) {
+                self._presenceServer.onclose = function() {
                     self.dispatchEventNamed('close');
                 };
             });
@@ -277,8 +277,12 @@ exports.WsPresenceClient = Target.specialize({
 
     removeClient: {
         value: function(clientId) {
-            this._rtcServices[clientId].quit();
-            delete this._rtcServices[clientId];
+            try {
+                this._rtcServices[clientId].quit();
+            } catch (err) {
+            } finally {
+                delete this._rtcServices[clientId];
+            }
         }
     },
 
@@ -367,6 +371,9 @@ exports.WsPresenceClient = Target.specialize({
                                 });
                                 rtcService.addEventListener('forwardMessage', function(event) {
                                     self._forwardMessage(event.detail);
+                                });
+                                rtcService.addEventListener('connectionClose', function(event) {
+                                    self.dispatchEvent(event);
                                 });
 
                                 this._rtcServices[message.source] = rtcService;
