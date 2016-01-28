@@ -230,8 +230,15 @@ exports.WsPresenceClient = Target.specialize({
 
     closeRoom: {
         value: function(id) {
-            var self = this;
-            return Promise.all(this._rtcServices.map(function(x) { return x.disconnect(); }))
+            var self = this,
+                disconnectionPromises = [];
+            for (var rtcServiceId in this._rtcServices) {
+                if (this._rtcServices.hasOwnProperty(rtcServiceId)) {
+                    disconnectionPromises.push(this._rtcServices[rtcServiceId].disconnect());
+                }
+            }
+            //return Promise.all(this._rtcServices.map(function(x) { return x.disconnect(); }))
+            return Promise.all(disconnectionPromises)
                 .then(function() {
                     if (self._presenceServer && self._presenceServer.readyState === 1) {
                         var message = {
