@@ -234,7 +234,7 @@ exports.WsPresenceClient = Target.specialize({
                 disconnectionPromises = [];
             for (var rtcServiceId in this._rtcServices) {
                 if (this._rtcServices.hasOwnProperty(rtcServiceId)) {
-                    disconnectionPromises.push(this._rtcServices[rtcServiceId].disconnect());
+                    disconnectionPromises.push(this._rtcServices[rtcServiceId].quit());
                 }
             }
             //return Promise.all(this._rtcServices.map(function(x) { return x.disconnect(); }))
