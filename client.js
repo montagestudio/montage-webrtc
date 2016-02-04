@@ -211,7 +211,8 @@ var RTCService = Target.specialize({
             };
 
             peerConnection.onaddstream = function(event) {
-                self.dispatchEvent(event, self._targetClient);
+                event.remoteId = self._targetClient;
+                self.dispatchEvent(event);
             };
 
             peerConnection.oniceconnectionstatechange = function() {
@@ -436,11 +437,20 @@ var RTCService = Target.specialize({
                 self.dispatchEventNamed('ready', true, true, { role: peerConnection.role });
                 if (peerConnection.role === ROLE_DATA) {
                     var pingRemote = function() {
-                        try {
-                            dataChannel.send('{ "type": "ping"}');
-                            setTimeout(pingRemote, 5090);
-                        } catch (err) {
-                            console.log('Unable to ping:', err);
+                        if (!dataChannel.isWaitingForPong) {
+                            try {
+                                dataChannel.send('{ "type": "ping"}');
+                                dataChannel.isWaitingForPong = true;
+                                setTimeout(pingRemote, 5000);
+                            } catch (err) {
+                                console.log('Unable to ping:', self._targetClient, err, dataChannel.readyState);
+                            }
+                        } else {
+                            console.log('Pong timeout');
+                            try {
+                                dataChannel.close();
+                                peerConnection.close();
+                            } catch (err) {}
                         }
                     };
                     setTimeout(pingRemote, 5000)
@@ -470,6 +480,7 @@ var RTCService = Target.specialize({
                             dataChannel.send('{ "type": "pong" }');
                             break;
                         case 'pong':
+                            dataChannel.isWaitingForPong = false;
                             break;
                         default:
                             self.dispatchEvent(event);

@@ -33,7 +33,6 @@ exports.WsPresenceClient = Target.specialize({
 
     init: {
         value: function(presenceEndpointUrl, isServer) {
-            var self = this;
             if (clients[presenceEndpointUrl]) {
                 return clients[presenceEndpointUrl];
             }
@@ -41,15 +40,7 @@ exports.WsPresenceClient = Target.specialize({
 
             this._rtcServices = {};
             if (!isServer) {
-                this._rtcServices.default = new RTCService().init(this._id);
-                var signalingMessageListener = function(event) {
-                    self._send(event.detail);
-                };
-                this._rtcServices.default.addEventListener('signalingMessage', signalingMessageListener, false);
-                this._rtcServices.default.addEventListener('switchToP2P', function() {
-                    self._rtcServices.default.removeEventListener('signalingMessage', signalingMessageListener);
-                    self.disconnect();
-                }, false);
+                this._initializeClient();
             }
 
             return this;
@@ -201,7 +192,7 @@ exports.WsPresenceClient = Target.specialize({
     joinRoom: {
         value: function(id) {
             var self = this,
-                classroom;
+                room;
             return this._ensureConnected()
                 .then(function() {
                     var message = {
@@ -217,13 +208,11 @@ exports.WsPresenceClient = Target.specialize({
                     return self._storeMessagePromise(message)
                 })
                 .then(function (response) {
-                    classroom = response.data;
-                })
-                .then(function() {
+                    room = response.data;
                     return self._rtcServices.default.connect(id);
                 })
                 .then(function() {
-                    return classroom;
+                    return room;
                 });
         }
     },
@@ -237,7 +226,6 @@ exports.WsPresenceClient = Target.specialize({
                     disconnectionPromises.push(this._rtcServices[rtcServiceId].quit());
                 }
             }
-            //return Promise.all(this._rtcServices.map(function(x) { return x.disconnect(); }))
             return Promise.all(disconnectionPromises)
                 .then(function() {
                     if (self._presenceServer && self._presenceServer.readyState === 1) {
@@ -312,6 +300,21 @@ exports.WsPresenceClient = Target.specialize({
             } else {
                 return Promise.resolve();
             }
+        }
+    },
+
+    _initializeClient: {
+        value: function () {
+            var self = this;
+            this._rtcServices.default = new RTCService().init(this._id);
+            var signalingMessageListener = function (event) {
+                self._send(event.detail);
+            };
+            this._rtcServices.default.addEventListener('signalingMessage', signalingMessageListener, false);
+            this._rtcServices.default.addEventListener('switchToP2P', function () {
+                self._rtcServices.default.removeEventListener('signalingMessage', signalingMessageListener);
+                self.disconnect();
+            }, false);
         }
     },
 
