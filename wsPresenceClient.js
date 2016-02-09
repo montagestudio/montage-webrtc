@@ -283,13 +283,21 @@ exports.WsPresenceClient = Target.specialize({
 
     attachStreamToClient: {
         value: function(stream, clientId) {
-            this._rtcServices[clientId].attachStream(stream);
+            try {
+                this._rtcServices[clientId].attachStream(stream);
+            } catch (err) {
+                console.log('Cannot attach stream to client:', clientId, err);
+            }
         }
     },
 
     detachStreamFromClient: {
         value: function(stream, clientId) {
-            this._rtcServices[clientId].detachStream(stream);
+            try {
+                this._rtcServices[clientId].detachStream(stream);
+            } catch (err) {
+                console.log('Cannot attach stream to client:', clientId, err);
+            }
         }
     },
 

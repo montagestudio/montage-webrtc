@@ -1,4 +1,5 @@
 var Target = require("montage/core/target").Target,
+    Promise = require('montage/core/promise').Promise,
     RTCService = require('./client').RTCService;
 
 exports.RtcPPresenceClient = Target.specialize({
@@ -49,6 +50,9 @@ exports.RtcPPresenceClient = Target.specialize({
             peer.addEventListener('removestream', function(event) {
                 self.dispatchEvent(event);
             });
+            peer.addEventListener('connectionClose', function(event) {
+                self.dispatchEvent(event);
+            });
             peer.addEventListener('message', function(event) {
                 var message = JSON.parse(event.data);
                 switch (message.type) {
@@ -60,6 +64,10 @@ exports.RtcPPresenceClient = Target.specialize({
                         break;
                 }
             });
+            peer.addEventListener('connectionClose', function(event) {
+                self._disconnectFromPeer(event.detail);
+                self.dispatchEvent(event);
+            });
             this._peers[remoteId] = peer;
             return peer;
         }
@@ -69,7 +77,7 @@ exports.RtcPPresenceClient = Target.specialize({
         value: function(message) {
             switch (message.cmd) {
                 case 'detachAll':
-                    this._peers[message.source].detachLocalStreams(message.source);
+                    this._peers[message.source].detachStream();
                     break;
                 default:
                     console.log('Unknown ' + message.type + ' cmd:', message.cmd, message);
@@ -82,7 +90,9 @@ exports.RtcPPresenceClient = Target.specialize({
         value: function(remoteId) {
             if (remoteId !== this.id) {
                 var peer = this._createPeer(remoteId);
-                peer.connectToPeer(remoteId);
+                return peer.connectToPeer(remoteId);
+            } else {
+                return Promise.resolve();
             }
         }
     },
@@ -201,7 +211,7 @@ exports.RtcPPresenceClient = Target.specialize({
                 cmd: 'detachAll'
             };
             for (var peerId in this._peers) {
-                if (this._peers.hasOwnProperty(peerId) && this._topology.indexOf(peerId) != -1) {
+                if (this._peers.hasOwnProperty(peerId)) {
                     this._peers[peerId].send(message, peerId);
                 }
             }

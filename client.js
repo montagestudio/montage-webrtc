@@ -74,7 +74,10 @@ var RTCService = Target.specialize({
         value: function(peerId) {
             this._targetClient = peerId || this._targetClient;
             this._peerConnections[ROLE_DATA]      = this._createPeerConnection(ROLE_DATA, true);
-            return this._sendOffer(this._peerConnections[ROLE_DATA]);
+            return this._sendOffer(this._peerConnections[ROLE_DATA])
+                .then(function() {
+                    return peerId;
+                });
         }
     },
 
@@ -125,8 +128,16 @@ var RTCService = Target.specialize({
 
     attachStream: {
         value: function(stream) {
-            this._peerConnections[ROLE_MEDIA] = this._createPeerConnection(ROLE_MEDIA);
-            this._peerConnections[ROLE_MEDIA].addStream(stream);
+            var self = this;
+            return new Promise.Promise(function(resolve, reject) {
+                try {
+                    self._peerConnections[ROLE_MEDIA] = self._createPeerConnection(ROLE_MEDIA);
+                    self._peerConnections[ROLE_MEDIA].addStream(stream);
+                    resolve();
+                } catch (err) {
+                    reject(err);
+                }
+            });
         }
     },
 
