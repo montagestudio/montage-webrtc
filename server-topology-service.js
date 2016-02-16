@@ -84,13 +84,14 @@ exports.ServerTopologyService = Target.specialize(/** @lends ServerTopologyServi
                 }
                 paths.push(path);
             }
+console.log(paths);
             return paths;
         }
     },
 
     _getNextNode: {
         value: function(orphanNodes, current, path) {
-            var MAX_PATH_LENGTH = 4;
+            var MAX_PATH_LENGTH = 1;
             if (path.length < MAX_PATH_LENGTH) {
                 var candidate,
                     i;

@@ -58,8 +58,8 @@ var RTCService = Target.specialize({
         value: function(roomId) {
             var self = this;
             this._roomId = roomId || this._roomId;
-            this._peerConnections[ROLE_SIGNALING] = this._createPeerConnection(ROLE_SIGNALING, true);
-            this._peerConnections[ROLE_DATA]      = this._createPeerConnection(ROLE_DATA, true);
+            this._peerConnections[ROLE_SIGNALING] = this._createPeerConnection(ROLE_SIGNALING);
+            this._peerConnections[ROLE_DATA]      = this._createPeerConnection(ROLE_DATA);
             return this._sendOffer(this._peerConnections[ROLE_SIGNALING])
                 .then(function() {
                     return self._sendOffer(self._peerConnections[ROLE_DATA])
@@ -73,7 +73,7 @@ var RTCService = Target.specialize({
     connectToPeer: {
         value: function(peerId) {
             this._targetClient = peerId || this._targetClient;
-            this._peerConnections[ROLE_DATA]      = this._createPeerConnection(ROLE_DATA, true);
+            this._peerConnections[ROLE_DATA]      = this._createPeerConnection(ROLE_DATA);
             return this._sendOffer(this._peerConnections[ROLE_DATA])
                 .then(function() {
                     return peerId;
@@ -95,6 +95,9 @@ var RTCService = Target.specialize({
                     break;
                 case 'mode':
                     return this._handleModeMessage(message);
+                    break;
+                case 'close':
+                    return this._closeConnectionWithRole(message.data.role, true);
                     break;
                 default:
                     console.log('Unknown message type:', message.type, message);
@@ -144,8 +147,8 @@ var RTCService = Target.specialize({
     detachStream: {
         value: function() {
             if (this._peerConnections[ROLE_MEDIA]) {
-                this._peerConnections[ROLE_MEDIA].close();
-                delete this._peerConnections[ROLE_MEDIA];
+                this._closeConnectionWithRole(ROLE_MEDIA);
+
             }
         }
     },
@@ -170,7 +173,9 @@ var RTCService = Target.specialize({
             switch (message.cmd) {
                 case 'offer':
                     this._targetClient = message.source;
-                    this._peerConnections[role] = this._createPeerConnection(role);
+                    if (!this._peerConnections[role]) {
+                        this._peerConnections[role] = this._createPeerConnection(role);
+                    }
                     this._peerConnections[role].descriptionVersion = data.descriptionVersion;
                     this._peerConnections[role].remoteState = data.state;
                     return this._receiveOffer(this._peerConnections[role], data.description);
@@ -194,12 +199,24 @@ var RTCService = Target.specialize({
     },
 
     _closeConnectionWithRole: {
-        value: function(role) {
-            try {
-                this._dataChannels[role].close();
-            }catch (err) {
-            } finally {
-                delete this._dataChannels[role];
+        value: function(role, isFromPeer) {
+            if (!isFromPeer) {
+                var message = {
+                    type: 'close',
+                    data: {
+                        role: role,
+                        targetClient: this._targetClient
+                    }
+                };
+                this._sendSignaling(message);
+            }
+            if (this._dataChannels[role]) {
+                try {
+                    this._dataChannels[role].close();
+                }catch (err) {
+                } finally {
+                    delete this._dataChannels[role];
+                }
             }
             try {
                 this._peerConnections[role].close();
@@ -481,6 +498,7 @@ var RTCService = Target.specialize({
                     var message = JSON.parse(event.data);
                     switch (message.type) {
                         case 'webrtc':
+                        case 'close':
                             if (self._isP2P && self._removePeerId(message.data.targetClient) !== self.id) {
                                 self.dispatchEventNamed('forwardMessage', true, true, message);
                             } else {
