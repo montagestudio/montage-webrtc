@@ -380,6 +380,10 @@ exports.WsPresenceClient = Target.specialize({
                                 rtcService.addEventListener('signalingMessage', function(event) {
                                     self._send(event.detail);
                                 }, false);
+                                rtcService.addEventListener('clientError', function(event) {
+                                    event.remoteId = message.source;
+                                    self.dispatchEvent(event);
+                                });
                                 rtcService.addEventListener('message', function(event) {
                                     self.dispatchEvent(event);
                                 });

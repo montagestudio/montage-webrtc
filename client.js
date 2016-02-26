@@ -109,8 +109,17 @@ var RTCService = Target.specialize({
 
     send: {
         value: function(message) {
-            message.source = message.source || this.id;
-            this._dataChannels[ROLE_DATA].send(JSON.stringify(message));
+            try {
+                message.source = message.source || this.id;
+                this._dataChannels[ROLE_DATA].send(JSON.stringify(message));
+            } catch (err) {
+                var errorMessage = {
+                    source: this.id,
+                    type: 'clientError',
+                    cmd: 'send'
+                };
+                this.dispatchEventNamed('sendError', true, true, errorMessage);
+            }
         }
     },
 
@@ -134,8 +143,11 @@ var RTCService = Target.specialize({
             var self = this;
             return new Promise.Promise(function(resolve, reject) {
                 try {
-                    self._peerConnections[ROLE_MEDIA] = self._createPeerConnection(ROLE_MEDIA);
+                    if (!self._peerConnections[ROLE_MEDIA]) {
+                        self._peerConnections[ROLE_MEDIA] = self._createPeerConnection(ROLE_MEDIA);
+                    }
                     self._peerConnections[ROLE_MEDIA].addStream(stream);
+                    self._peerConnections[ROLE_MEDIA].streamId = stream.id;
                     resolve();
                 } catch (err) {
                     reject(err);
@@ -146,9 +158,10 @@ var RTCService = Target.specialize({
 
     detachStream: {
         value: function() {
-            if (this._peerConnections[ROLE_MEDIA]) {
-                this._closeConnectionWithRole(ROLE_MEDIA);
-
+            var mediaPeerConnection = this._peerConnections[ROLE_MEDIA];
+            if (mediaPeerConnection) {
+                var stream = mediaPeerConnection.getStreamById(mediaPeerConnection.streamId);
+                mediaPeerConnection.removeStream(stream);
             }
         }
     },
@@ -170,30 +183,39 @@ var RTCService = Target.specialize({
         value: function(message) {
             var data = message.data,
                 role = data.role;
-            switch (message.cmd) {
-                case 'offer':
-                    this._targetClient = message.source;
-                    if (!this._peerConnections[role]) {
-                        this._peerConnections[role] = this._createPeerConnection(role);
-                    }
-                    this._peerConnections[role].descriptionVersion = data.descriptionVersion;
-                    this._peerConnections[role].remoteState = data.state;
-                    return this._receiveOffer(this._peerConnections[role], data.description);
-                    break;
-                case 'answer':
-                    if (data.descriptionVersion === this._peerConnections[role].descriptionVersion) {
+            try {
+                switch (message.cmd) {
+                    case 'offer':
                         this._targetClient = message.source;
-                        return this._receiveAnswer(this._peerConnections[role], data.description);
-                    } else {
-                        return Promise.resolve();
-                    }
-                    break;
-                case 'candidates':
-                    this._receiveIceCandidates(this._peerConnections[role], data.candidates);
-                    break;
-                default:
-                    console.log('Unknown webrtc message cmd:', message.cmd, message);
-                    break;
+                        if (!this._peerConnections[role]) {
+                            this._peerConnections[role] = this._createPeerConnection(role);
+                        }
+                        this._peerConnections[role].descriptionVersion = data.descriptionVersion;
+                        this._peerConnections[role].remoteState = data.state;
+                        return this._receiveOffer(this._peerConnections[role], data.description);
+                        break;
+                    case 'answer':
+                        if (data.descriptionVersion === this._peerConnections[role].descriptionVersion) {
+                            this._targetClient = message.source;
+                            return this._receiveAnswer(this._peerConnections[role], data.description);
+                        } else {
+                            return Promise.resolve();
+                        }
+                        break;
+                    case 'candidates':
+                        this._receiveIceCandidates(this._peerConnections[role], data.candidates);
+                        break;
+                    default:
+                        console.log('Unknown webrtc message cmd:', message.cmd, message);
+                        break;
+                }
+            } catch (err) {
+                var errorMessage = {
+                    source: this.id,
+                    type: 'clientError',
+                    cmd: 'send'
+                };
+                this.dispatchEventNamed('sendError', true, true, errorMessage);
             }
         }
     },
@@ -243,11 +265,9 @@ var RTCService = Target.specialize({
                 self.dispatchEvent(event);
             };
 
-            peerConnection.oniceconnectionstatechange = function() {
-                if (peerConnection.iceConnectionState === 'completed' ||
-                    peerConnection.iceConnectionState === 'connected') {
-
-                }
+            peerConnection.onremovestream = function(event) {
+                event.remoteId = self._targetClient;
+                self.dispatchEvent(event);
             };
 
             peerConnection.onnegotiationneeded = function() {
@@ -469,7 +489,7 @@ var RTCService = Target.specialize({
                             try {
                                 dataChannel.send('{ "type": "ping"}');
                                 dataChannel.isWaitingForPong = true;
-                                setTimeout(pingRemote, 5000);
+                                setTimeout(pingRemote, 5000 + (Math.random() * 1000));
                             } catch (err) {
                                 console.log('Unable to ping:', self._targetClient, err, dataChannel.readyState);
                             }
@@ -481,7 +501,7 @@ var RTCService = Target.specialize({
                             } catch (err) {}
                         }
                     };
-                    setTimeout(pingRemote, 5000)
+                    setTimeout(pingRemote, 5000 + (Math.random() * 1000))
                 }
             };
 
@@ -510,6 +530,9 @@ var RTCService = Target.specialize({
                             break;
                         case 'pong':
                             dataChannel.isWaitingForPong = false;
+                            break;
+                        case 'clientError':
+                            self.dispatchEventNamed('clientError', true, true, message);
                             break;
                         default:
                             self.dispatchEvent(event);

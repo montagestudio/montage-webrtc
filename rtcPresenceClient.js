@@ -42,7 +42,7 @@ exports.RtcPPresenceClient = Target.specialize({
             var self = this,
                 peer = new RTCService().init(this.id);
             peer.addEventListener('signalingMessage', function (event) {
-                self._signalingService.send(event.detail, remoteId);
+                self._signalingService.send(event.detail);
             });
             peer.addEventListener('addstream', function(event) {
                 self.dispatchEvent(event);
@@ -64,9 +64,13 @@ exports.RtcPPresenceClient = Target.specialize({
                         break;
                 }
             });
+
             peer.addEventListener('connectionClose', function(event) {
                 self._disconnectFromPeer(event.detail);
                 self.dispatchEvent(event);
+            });
+            peer.addEventListener('sendError', function(event) {
+                self._signalingService.send(event.detail)
             });
             this._peers[remoteId] = peer;
             return peer;
