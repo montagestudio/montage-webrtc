@@ -254,13 +254,36 @@ exports.WsPresenceClient = Target.specialize({
         }
     },
 
+    _sendToNextClientAndWait: {
+        value: function(message, clients, delay) {
+            var self = this,
+                client = clients.pop(),
+                wait = function() {
+                return new Promise(function(resolve) {
+                    setTimeout(resolve, delay);
+                });
+            };
+
+            return new Promise(function(resolve) {
+                self.sendToClient(message, client);
+                resolve();
+            })
+                .then(wait)
+                .then(function() {
+                    if (clients.length > 0) {
+                        return self._sendToNextClientAndWait(message, clients, delay);
+                    } else {
+                        return null;
+                    }
+                });
+        }
+    },
+
     sendToClients: {
-        value: function(message) {
-            for (var clientId in this._rtcServices) {
-                if (this._rtcServices.hasOwnProperty(clientId)) {
-                    this.sendToClient(message, clientId);
-                }
-            }
+        value: function(message, delayBetweenClients) {
+            delayBetweenClients = delayBetweenClients || 0;
+            var clients = Object.keys(this._rtcServices);
+            this._sendToNextClientAndWait(message, clients, delayBetweenClients);
         }
     },
 
