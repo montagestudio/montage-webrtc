@@ -289,7 +289,9 @@ exports.WsPresenceClient = Target.specialize({
 
     sendToClient: {
         value: function(message, clientId) {
-            this._rtcServices[this._removePeerId(clientId)].send(message);
+            if (clientId) {
+                this._rtcServices[this._removePeerId(clientId)].send(message);
+            }
         }
     },
 

@@ -362,7 +362,7 @@ var RTCService = Target.specialize({
 
     _sendSignaling: {
         value: function(message) {
-            if (this._isP2P) {
+            if (this._isP2P && this._dataChannels[ROLE_SIGNALING]) {
                 this._dataChannels[ROLE_SIGNALING].send(JSON.stringify(message));
             } else {
                 this.dispatchEventNamed('signalingMessage', true, true, message);
@@ -519,7 +519,7 @@ var RTCService = Target.specialize({
                     switch (message.type) {
                         case 'webrtc':
                         case 'close':
-                            if (self._isP2P && self._removePeerId(message.data.targetClient) !== self.id) {
+                            if (self._isP2P && message.data.targetClient && self._removePeerId(message.data.targetClient) !== self.id) {
                                 self.dispatchEventNamed('forwardMessage', true, true, message);
                             } else {
                                 self.dispatchEventNamed('signalingMessage', true, true, message);
