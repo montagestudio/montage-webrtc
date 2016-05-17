@@ -422,6 +422,9 @@ exports.WsPresenceClient = Target.specialize({
                                 rtcService.addEventListener('connectionClose', function(event) {
                                     self.dispatchEvent(event);
                                 });
+                                rtcService.addEventListener('pongTimeout', function(event) {
+                                    self.dispatchEvent(event);
+                                });
 
                                 this._rtcServices[message.source] = rtcService;
                             }

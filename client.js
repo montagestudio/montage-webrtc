@@ -13,7 +13,8 @@ var Target = require("montage/core/target").Target,
         candidatesSent:         16,
         candidatesReceived:     32
     },
-    CONNECTION_READY_TO_EXCHANGE_CANDIDATES =    15;
+    CONNECTION_READY_TO_EXCHANGE_CANDIDATES =    15,
+    PING_TIMEOUT = 5000;
 
 var RTCService = Target.specialize({
     id:                        { value: null },
@@ -482,6 +483,7 @@ var RTCService = Target.specialize({
             var self = this;
 
             dataChannel.onopen = function () {
+                dataChannel.missedPongs = 0;
                 self.dispatchEventNamed('ready', true, true, { role: peerConnection.role });
                 if (peerConnection.role === ROLE_DATA) {
                     var pingRemote = function() {
@@ -489,19 +491,29 @@ var RTCService = Target.specialize({
                             try {
                                 dataChannel.send('{ "type": "ping"}');
                                 dataChannel.isWaitingForPong = true;
-                                setTimeout(pingRemote, 5000 + (Math.random() * 1000));
+                                setTimeout(pingRemote, PING_TIMEOUT + (Math.random() * 1000));
                             } catch (err) {
                                 console.log('Unable to ping:', self._targetClient, err, dataChannel.readyState);
                             }
                         } else {
-                            console.log('Pong timeout');
-                            try {
-                                dataChannel.close();
-                                peerConnection.close();
-                            } catch (err) {}
+                            dataChannel.missedPongs++;
+                            console.log('Pong timeout', dataChannel.missedPongs);
+                            if (dataChannel.missedPongs > 5) {
+                                self.dispatchEventNamed('pongTimeout', true, true, {
+                                    client: self._targetClient,
+                                    timeout: PING_TIMEOUT
+                                });
+                                try {
+                                    dataChannel.close();
+                                    peerConnection.close();
+                                } catch (err) {}
+                            } else {
+                                dataChannel.isWaitingForPong = false;
+                                setTimeout(pingRemote, PING_TIMEOUT + (Math.random() * 1000));
+                            } 
                         }
                     };
-                    setTimeout(pingRemote, 5000 + (Math.random() * 1000))
+                    setTimeout(pingRemote, PING_TIMEOUT + (Math.random() * 1000))
                 }
             };
 
@@ -529,6 +541,7 @@ var RTCService = Target.specialize({
                             dataChannel.send('{ "type": "pong" }');
                             break;
                         case 'pong':
+                            dataChannel.missedPongs = 0;
                             dataChannel.isWaitingForPong = false;
                             break;
                         case 'clientError':
