@@ -88,9 +88,14 @@ exports.ServerTopologyService = Target.specialize(/** @lends ServerTopologyServi
         }
     },
 
+    _strongMesh: {
+        value: false
+    },
+
     _getNextNode: {
         value: function(orphanNodes, current, path) {
-            var MAX_PATH_LENGTH = 4;
+            var MAX_PATH_LENGTH = this._strongMesh ? 1 : 4;
+           
             if (path.length < MAX_PATH_LENGTH) {
                 var candidate,
                     i;
@@ -151,12 +156,12 @@ exports.ServerTopologyService = Target.specialize(/** @lends ServerTopologyServi
         }
     },
 
-    removeNodeOld: {
-        value: function(id) {
-            this._nodesList = this._nodesList.filter(function(x) { return !(x.split('P')[0] === id.split('P')[0]) });
-            this.dispatchEventNamed('topologyChanged', true, true, this._nodesList);
-        }
-    },
+    // removeNodeOld: {
+    //     value: function(id) {
+    //         this._nodesList = this._nodesList.filter(function(x) { return !(x.split('P')[0] === id.split('P')[0]) });
+    //         this.dispatchEventNamed('topologyChanged', true, true, this._nodesList);
+    //     }
+    // },
 
     getTopology: {
         value: function() {
